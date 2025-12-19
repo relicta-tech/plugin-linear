@@ -3,14 +3,19 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+
+env:
+  PLUGIN_NAME: plugin-linear
 
 jobs:
   build:
-    name: Build ${{ matrix.goos }}_${{ matrix.goarch }}
+    name: Build
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -39,56 +44,74 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: "1.24"
+          cache: true
 
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
+          CGO_ENABLED: "0"
         run: |
-          go build -ldflags="-s -w" -o linear_${{ matrix.suffix }}${{ matrix.ext }} .
+          go build -ldflags="-s -w -X main.Version=${{ github.ref_name }}" \
+            -o ${{ env.PLUGIN_NAME }}_${{ matrix.suffix }}${{ matrix.ext }}
+
+      - name: Package (Unix)
+        if: matrix.goos != 'windows'
+        run: |
+          tar -czvf ${{ env.PLUGIN_NAME }}_${{ matrix.suffix }}.tar.gz \
+            ${{ env.PLUGIN_NAME }}_${{ matrix.suffix }}
+
+      - name: Package (Windows)
+        if: matrix.goos == 'windows'
+        run: |
+          zip ${{ env.PLUGIN_NAME }}_${{ matrix.suffix }}.zip \
+            ${{ env.PLUGIN_NAME }}_${{ matrix.suffix }}.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linear_${{ matrix.suffix }}
-          path: linear_${{ matrix.suffix }}${{ matrix.ext }}
+          name: ${{ env.PLUGIN_NAME }}_${{ matrix.suffix }}
+          path: ${{ env.PLUGIN_NAME }}_${{ matrix.suffix }}.*
 
   release:
-    name: Create Release
+    name: Release
     needs: build
     runs-on: ubuntu-latest
-
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
 
-      - name: Prepare release assets
+      - name: Flatten artifacts
         run: |
-          cd dist
-          for dir in */; do
-            name="${dir%/}"
-            if [[ "$name" == *"windows"* ]]; then
-              cd "$name"
-              zip "../${name}.zip" *
-              cd ..
-            else
-              cd "$name"
-              tar -czvf "../${name}.tar.gz" *
-              cd ..
-            fi
-          done
-          # Generate checksums for archives
+          mkdir -p release
+          find dist -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec mv {} release/ \;
+
+      - name: Generate checksums
+        working-directory: release
+        run: |
           sha256sum *.tar.gz *.zip > checksums.txt
 
-      - name: Create release
-        uses: softprops/action-gh-release@v2
+      - name: Generate attestations
+        uses: actions/attest-build-provenance@v2
         with:
-          files: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/checksums.txt
-          generate_release_notes: true
+          subject-path: |
+            release/${{ env.PLUGIN_NAME }}_darwin_aarch64.tar.gz
+            release/${{ env.PLUGIN_NAME }}_darwin_x86_64.tar.gz
+            release/${{ env.PLUGIN_NAME }}_linux_aarch64.tar.gz
+            release/${{ env.PLUGIN_NAME }}_linux_x86_64.tar.gz
+            release/${{ env.PLUGIN_NAME }}_windows_x86_64.zip
+
+      - name: Release with Relicta
+        uses: relicta-tech/relicta-action@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          command: publish
+          plugins: github

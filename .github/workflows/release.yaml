@@ -109,11 +109,25 @@ jobs:
             release/${{ env.PLUGIN_NAME }}_linux_x86_64.tar.gz
             release/${{ env.PLUGIN_NAME }}_windows_x86_64.zip
 
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create ${{ github.ref_name }} \
-            --title "Release ${{ github.ref_name }}" \
-            --generate-notes \
-            release/*
+      - name: Release with Relicta
+        uses: relicta-tech/relicta-action@v2
+        with:
+          version: latest
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          command: publish
+          plugins: github
+          config-content: |
+            versioning:
+              strategy: conventional
+              tag_prefix: v
+            plugins:
+              - name: github
+                enabled: true
+                config:
+                  draft: false
+                  prerelease: false
+                  generate_release_notes: true
+                  assets:
+                    - "release/*.tar.gz"
+                    - "release/*.zip"
+                    - "release/checksums.txt"
